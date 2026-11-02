@@ -1,0 +1,35 @@
+# Local dependencies and generated outputs
+node_modules/
+build/
+dist/
+target/
+coverage/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+credentials/
+credentials.*
+.credentials.json
+claude_accounts.json
+*.key
+*.pem
+
+# Runtime data, logs and private test evidence
+logs/
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+.local/
+private-evidence/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
