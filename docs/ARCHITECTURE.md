@@ -1,12 +1,48 @@
 # 架构提案
 
-状态：Proposed · 日期：2026-11-02 · 本文描述边界，不代表已有实现。
+状态：基础原型已落代码，Desktop 集成方案待 M0 验证 · 日期：2026-11-02 · 下文分别标明当前实现与后续设计。
 
 ## 基本原则
 
 本地桌面应用负责组织账号元数据、展示可核验状态和协调切换过程。Claude Desktop 继续负责实际编程会话与官方认证。对接方式必须由 M0 的证据决定，不能预设存在可用的 Desktop 自动化 API、身份切换文件或跨账号会话导入能力。
 
-技术栈尚未批准，见 [ADR 0001](adr/0001-desktop-stack.md)。当前不创建虚假的可运行工程，不实现凭据读取、写入或迁移。
+技术栈采用 Rust + Tauri 2 + React + TypeScript + SQLite，见 [ADR 0001](adr/0001-desktop-stack.md)。当前已有基础工作台和本地存储源码，不实现凭据读取、写入或迁移。
+
+## 技术分工
+
+| 层次 | 技术与职责 |
+| --- | --- |
+| 本地应用逻辑 | Rust 承担账号元数据、切换状态协调、用量适配和平台适配 |
+| 桌面壳 | Tauri 2 提供窗口与前后端 IPC；只暴露明确用途和范围的命令 |
+| 界面 | React + TypeScript 展示账号、用量及接续状态；Vite + pnpm 负责前端开发与构建工具链 |
+| 本地存储 | Rust 侧通过 rusqlite 访问 SQLite，保存非敏感元数据、偏好、用量快照及脱敏操作状态；不保存 token、密码或完整对话 |
+| 异步与网络 | tokio、reqwest 按实际需求引入；数据来源和调用方式仍需验证，不预设私有接口 |
+
+MVP 不设独立 HTTP 后端，原生界面通过受限 IPC 调用 Rust 本地逻辑。依赖版本由 pnpm 和 Cargo 锁文件固定；实际检查结果见 [原型构建与测试记录](validation/prototype-build.md)。Windows 优先，macOS 的平台行为与分发需要独立验证，当前无性能基准结论。
+
+选用 Rust/Tauri 着重考虑桌面系统集成，以及与 cc-switch 保持语言和框架一致以减少未来经评审的局部移植成本。React 同样服务于工程一致性，不表示 Vue 无法实现；也不表示已经决定复制上游代码或证明 Desktop 接续可行。
+
+Tauri 的 [capabilities](https://v2.tauri.app/security/capabilities/) 可按窗口/WebView 限定权限，当前配置将六个自定义命令限制到主窗口。自定义 Rust 命令仍校验参数与操作状态；不能假设框架自动保证这些命令安全，也不向界面暴露任意 SQL、路径或任意命令执行入口。
+
+## 当前原型实现
+
+- `src/App.tsx` 提供账号档案、接续记录和本机环境界面；`src/lib/api.ts` 区分原生 IPC 与浏览器预览。预览数据只在内存中存在，刷新清空；原生错误直接报告，不退回预览适配器。
+- `src-tauri/src/store.rs` 使用 rusqlite 管理系统应用数据目录内的 `session-harbor.sqlite3`。schema v1 包含账号与预检表，使用参数化 SQL、事务、5 秒 busy timeout、UUID 和版本检查，不因错误重建空库。
+- 账号名称去除首尾空白后为 1–40 个 Unicode 字符，备注最多 160 个字符；拒绝控制字符和忽略大小写后的重复名称。ID 由后端生成，更新和删除要求记录存在。
+- 预检仅有 `blocked` 与 `cancelled` 状态：同一账号的未取消预检可以复用；删除档案会取消相关阻塞记录，并保留当时的目标名称。工作台展示最近 20 条记录，不等于只存储 20 条。
+- `src-tauri/src/environment.rs` 只读检查有限的标准安装候选位置；`detected` 只表示候选存在，不代表版本受支持、进程在运行或身份已登录。浏览器无法检查本机，返回 unknown。
+- 用量目前始终返回 `unknown`，来源、观测时间、剩余百分比和重置时间均为空。尚未实现网络用量获取、登录、进程控制或会话恢复。
+
+| IPC 命令 | 当前用途 |
+| --- | --- |
+| `get_dashboard` | 读取账号、未知用量和最近预检记录 |
+| `save_account` | 验证并新增或更新本地别名、备注 |
+| `delete_account` | 删除档案并取消关联阻塞预检 |
+| `inspect_environment` | 只读发现安装候选 |
+| `prepare_handoff` | 记录因 Desktop 能力未验证而阻塞的预检 |
+| `cancel_handoff` | 将阻塞记录改为已取消 |
+
+前后端 DTO 使用 camelCase。此处的 `Account`、`Usage`、`Handoff` 是已实现的最小契约；下文模块表和扩展数据契约描述后续目标，不能据此推断能力已实现。
 
 ## 模块与职责
 
@@ -18,11 +54,11 @@
 | 用量来源适配 | 标准化来源口径、账号归属、观测时间、重置时间和未知状态 | 来源与许可先验证；不把 token 估算当订阅剩余额度；不默认复用 CLI 令牌查询私有接口 |
 | 会话接续协调 | 切换前检查、等待任务结束、引导切换、核验上下文、失败恢复 | 不改写官方会话索引来伪造接续；未知状态下停止，不自动重复切换 |
 | 平台适配 | Windows 客户端发现、进程状态与未来安全存储接口；后续 macOS 对应实现 | 不以 Windows 通过推断 macOS 兼容；不能仅看窗口关闭就认定子进程结束 |
-| 本地存储 | 最少化账号元数据、状态、偏好和脱敏诊断事件 | 存储格式待定；默认不复制完整对话；不把真实数据放进仓库 |
+| 本地存储 | 通过 Rust/rusqlite 管理 SQLite 中的非敏感账号元数据、用量快照、状态和偏好 | 不保存 token 或完整对话；界面不直接访问数据库；不把真实数据放进仓库 |
 
 ## 状态协调
 
-候选状态：`idle → preflight → waiting_for_tasks → authenticating → verifying_identity → resuming_session → verifying_context → ready`。任一步骤可以进入 `cancelled`、`failed` 或 `recovery_required`。
+后续候选状态：`idle → preflight → waiting_for_tasks → authenticating → verifying_identity → resuming_session → verifying_context → ready`。任一步骤可以进入 `cancelled`、`failed` 或 `recovery_required`。当前原型只实现本地 `blocked → cancelled` 记录，不执行此完整流程。
 
 每次操作关联独立操作 ID，禁止并发切换。`ready` 必须同时满足 Desktop 身份、项目/worktree、原会话和上下文验证；只有登录成功时仍停留在验证阶段。子进程是否存在及是否仍会写文件需要单独核验，无法确定时由用户处理后再继续。
 
@@ -35,10 +71,10 @@
 - `SessionReference`：用户授权记录的项目/worktree 引用、会话引用（仅当客户端提供可依赖标识）、最后核验时间；不保存对话正文。
 - `HandoffOperation`：来源/目标账号引用、阶段、结果和脱敏失败原因；不持久化原始认证响应。
 
-[ASSUMED] 首版无需远端服务或遥测。[待技术验证] 字段最终结构和数据库选择待 M0 后确定。[VERIFY WITH USER] 数据保留期限与清除入口待产品评审。
+MVP 不设独立 HTTP 后端。[ASSUMED] 首版不设遥测。当前 SQLite v1 仅保存账号元数据与预检记录；[待技术验证] 后续身份、用量和会话字段需依据 M0 结果增量迁移。[VERIFY WITH USER] 历史记录保留期限与清除入口待产品评审。
 
 ## 安全与可验证性
 
-秘密尽量留在官方客户端管理范围。若后续证据表明必须由本项目保存秘密，需先评审官方允许的用途、Windows 系统安全存储、最小权限、删除和恢复流程；这不是当前获准实现的功能。
+凭据仍由官方客户端管理，SQLite 不保存 token。若后续证据表明必须由本项目保存秘密，需先评审官方允许的用途、Windows 系统安全存储、最小权限、删除和恢复流程；这不是当前获准实现的功能。
 
 研发验证使用无秘密的临时项目与测试对话。发布日志只保留脱敏事件与状态，证据引用不携带账号邮箱、认证 URL、Cookie、真实项目路径或完整会话。对话保留与恢复结果必须区分观测事实和推测。

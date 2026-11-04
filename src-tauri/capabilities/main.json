@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Only the local metadata and read-only environment commands.",
+  "windows": ["main"],
+  "permissions": ["allow-get-dashboard","allow-save-account","allow-delete-account","allow-inspect-environment","allow-prepare-handoff","allow-cancel-handoff"]
+}
