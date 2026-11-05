@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api, isPreview, type Account, type Dashboard, type EnvironmentReport } from './lib/api';
+import { compareTimezone, formatUtcOffset, observeTimezone, type TimezoneObservation } from './lib/environmentDiagnostics';
 
 function Icon({ name, size = 20 }: { name: 'harbor' | 'accounts' | 'history' | 'device' | 'plus' | 'arrow' | 'close' | 'check'; size?: number }) {
   const paths = {
@@ -40,6 +41,8 @@ function date(value: string) { return new Intl.DateTimeFormat('zh-CN', { month: 
 export default function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [environment, setEnvironment] = useState<EnvironmentReport | null>(null);
+  const [timezoneObservation, setTimezoneObservation] = useState<TimezoneObservation | null>(null);
+  const [expectedTimezone, setExpectedTimezone] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState<'accounts' | 'history' | 'environment'>('accounts');
   const [loading, setLoading] = useState(true);
@@ -103,15 +106,39 @@ export default function App() {
   }
   async function inspect() {
     setDetecting(true); setError('');
-    try { setEnvironment(await api.inspectEnvironment()); }
+    setEnvironment(null);
+    try { setTimezoneObservation(observeTimezone()); }
+    catch { setTimezoneObservation(null); }
+    try {
+      const report = await api.inspectEnvironment();
+      setEnvironment(report);
+    }
     catch (cause) { setError(message(cause)); } finally { setDetecting(false); }
   }
 
+  const timezoneComparison = compareTimezone(expectedTimezone, timezoneObservation);
+  const timezoneStatus = timezoneComparison.status === 'match' ? '一致'
+    : timezoneComparison.status === 'mismatch' ? '不一致'
+      : timezoneComparison.status === 'invalid' ? '输入无效' : '未判定';
+
   const environmentPanel = <>
     <div className="section-heading"><div><span className="eyebrow">LOCAL ENVIRONMENT</span><h2>本机环境</h2></div><button className="button secondary compact" onClick={inspect} disabled={detecting}>{detecting ? '检测中…' : environment ? '重新检测' : '检测环境'}</button></div>
-    <p className="muted">只检查安装位置。检测到应用不代表已经登录，也不能证明会话能够接续。</p>
+    <p className="muted">安装检测只检查常见位置。检测到应用不代表已经登录，也不能证明会话能够接续。</p>
     <div className="environment-list">{(['desktop', 'cli'] as const).map((key) => <div className="environment-row" key={key}><span className="environment-icon"><Icon name="device" /></span><div><strong>{key === 'desktop' ? 'Claude Desktop' : 'Claude Code CLI'}</strong><p>{environment?.[key].detail ?? '尚未检测本机安装情况'}</p></div><span className={`badge ${environment?.[key].status === 'detected' ? 'detected' : ''}`}>{!environment ? '未检测' : ({ detected: '已检测到', not_detected: '未检测到', unsupported: '暂不支持', unknown: '未知' })[environment[key].status]}</span></div>)}</div>
     {environment && <p className="footnote">最近检测 {date(environment.checkedAt)} · {environment.platform}</p>}
+    <div className="timezone-diagnostic">
+      <div className="section-heading"><div><span className="eyebrow">LOCAL CONSISTENCY</span><h2>时区一致性检查</h2></div><span className={`badge ${timezoneComparison.status === 'match' ? 'detected' : timezoneComparison.status === 'mismatch' || timezoneComparison.status === 'invalid' ? 'amber' : ''}`}>{timezoneStatus}</span></div>
+      <p className="muted">读取{isPreview ? '当前浏览器' : '应用 WebView'}报告的本地时区。只有你提供期望时区后，才能比较是否一致。</p>
+      <div className="timezone-grid">
+        <div><span>报告的时区</span><strong>{timezoneObservation?.timeZone ?? '未知'}</strong></div>
+        <div><span>当前 UTC 偏移</span><strong>{timezoneObservation ? formatUtcOffset(timezoneObservation.utcOffsetMinutes) : '—'}</strong></div>
+        <div><span>本地显示时间</span><strong>{timezoneObservation?.localTime ?? '—'}</strong></div>
+      </div>
+      <label className="timezone-field" htmlFor="expected-timezone">你期望使用的时区（IANA 名称）</label>
+      <div className="timezone-input-row"><input id="expected-timezone" value={expectedTimezone} onChange={(event) => setExpectedTimezone(event.target.value)} placeholder="例如 Asia/Shanghai" maxLength={80} autoComplete="off" aria-describedby="timezone-guidance" /><span>仅本次页面有效</span></div>
+      <p id="timezone-guidance" className="timezone-guidance">{timezoneComparison.status === 'invalid' ? '请输入有效的 IANA 时区名称，例如 Asia/Shanghai。' : timezoneComparison.status === 'mismatch' ? `报告的时区与期望的 ${timezoneComparison.expectedTimeZone} 不同；请核对系统设置。` : timezoneComparison.status === 'match' ? `报告的时区与期望的 ${timezoneComparison.expectedTimeZone} 一致。` : '填写期望时区并检测环境后，才会显示比较结果。'}</p>
+      <p className="timezone-limit">这只是本地设置的一项核对，无法预测或防止账号受限。IP 位置、系统时间同步状态和账号政策状态均未核验；不会联网或读取 Claude 凭据。</p>
+    </div>
   </>;
 
   return <div className="app-shell">

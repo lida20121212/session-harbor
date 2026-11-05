@@ -1,5 +1,5 @@
-// Windows-only smoke test against the built app, using a fresh process-local data directory.
-// CDP is enabled only for this test process; normal application launches do not enable it.
+// Planned Windows-only smoke test against the built app. It remains disabled
+// until the database path is truly isolated and confirmed before IPC writes.
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -8,6 +8,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { chromium, expect } from '@playwright/test';
 
 if (process.platform !== 'win32') throw new Error('Native smoke currently supports Windows only.');
+// Windows resolves Tauri's app_data_dir through the RoamingAppData Known Folder.
+// Overriding APPDATA for a child process does not redirect that folder. Until
+// the app provides a test-only data root that this harness can verify via IPC,
+// stop before launching the EXE or making any database-changing calls.
+throw new Error('Native smoke is disabled: APPDATA does not isolate Tauri app_data_dir on Windows. A verified test-only data root is required before running mutating IPC.');
 const exe = resolve(process.argv[2] ?? 'src-tauri/target/release/session-harbor.exe');
 await mkdir('.tools', { recursive: true });
 const data = await mkdtemp(resolve('.tools/native-smoke-'));
